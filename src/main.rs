@@ -1,7 +1,5 @@
-use bevy::input::keyboard::KeyboardInput;
-use bevy::math::bounding::{Aabb2d, IntersectsVolume};
+use bevy::math::bounding::{Aabb2d, BoundingVolume, IntersectsVolume};
 use bevy::prelude::*;
-use bevy::sprite::MaterialMesh2dBundle;
 
 
 #[derive(Component)]
@@ -22,36 +20,37 @@ struct ProjectileTimer(Timer);
 #[derive(Component)]
 struct Enemy;
 
-const PADDLE_SIZE: Vec3 = Vec3::new(120.0, 20.0, 0.0);
-const PADDLE_COLOR: Color = Color::rgb(0.3, 0.3, 0.7);
-const TIME_STEP: f32 = 1.0 / 60.0;
+const PLAYER_SCALE: Vec3 = Vec3::new(2.0, 2.0, 2.0);
+const PLAYER_COLOR: Color = Color::rgb(0.3, 0.3, 0.7);
+const PLAYER_STARTING_POSITION: Vec3 = Vec3::new(0.0, -300.0, 1.0);
 const PLAYER_SPEED: f32 = 100.0;
-const PROJECTILE_SIZE: Vec3 = Vec3::splat(3.0);
-const PROJECTILE_COLOR: Color = Color::rgb(0.95, 0.95, 0.95);
+const ENEMY_STARTING_POSITION: Vec3 = Vec3::new(0.0, 20.0, 1.0);
+const ENEMY_SCALE: Vec3 = Vec3::new(2.0, 2.0, 2.0);
+//const PROJECTILE_SIZE: Vec3 = Vec3::splat(3.0);
+//const PROJECTILE_COLOR: Color = Color::rgb(0.95, 0.95, 0.95);
 const INITIAL_PROJECTILE_DIRECTION: Vec2 = Vec2::new(0.5, 0.5);
 const PROJECTILE_SPEED: f32 = 400.0;
-const PLAYER_STARTING_POSITION: Vec3 = Vec3::new(0.0, -300.0, 1.0);
-const TOP_OF_SCREEN: f32 = 350.0;
 const PROJECTILE_COOLDOWN_SECONDS: f32 = 0.3;
-const PROJECTILE_STARTING_POSITION: Vec3 = Vec3::new(0.0, 20.0, 1.0);
+const TOP_OF_SCREEN: f32 = 350.0;
+const TIME_STEP: f32 = 1.0 / 60.0;
 
 fn setup_game(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut gizmo_config_store: ResMut<GizmoConfigStore>,
     asset_server: Res<AssetServer>,
 ) {
-    commands.spawn(Camera2dBundle::default());
+    //gizmo_config_store.config_mut::<AabbGizmoConfigGroup>().1.draw_all ^= true;
 
+    commands.spawn(Camera2dBundle::default());
     commands.spawn((
         SpriteBundle {
+            texture: asset_server.load("player_ship.png"),
             transform: Transform {
                 translation: PLAYER_STARTING_POSITION,
-                scale: PADDLE_SIZE,
+                scale: PLAYER_SCALE,
                 ..default()
             },
             sprite: Sprite {
-                color: PADDLE_COLOR,
                 ..default()
             },
             ..default()
@@ -61,11 +60,17 @@ fn setup_game(
     ));
 
     commands.spawn((
-        MaterialMesh2dBundle {
-            mesh: meshes.add(Circle::default()).into(),
-            material: materials.add(ColorMaterial::from(PROJECTILE_COLOR)),
-            transform: Transform::from_translation(PROJECTILE_STARTING_POSITION)
-                .with_scale(PROJECTILE_SIZE * Vec3::new(2.0, 2.0, 2.0)),
+        SpriteBundle {
+            texture: asset_server.load("enemy_ship.png"),
+            transform: Transform {
+                translation: ENEMY_STARTING_POSITION,
+                scale: ENEMY_SCALE,
+                ..default()
+            },
+            sprite: Sprite {
+                flip_y: true,
+                ..default()
+            },
             ..default()
         },
         Enemy,
@@ -91,13 +96,13 @@ fn move_player(keyboard_input: Res<ButtonInput<KeyCode>>, mut query: Query<&mut 
     paddle_transform.translation.x = new_paddle_position;
 }
 
-
 fn shoot_projectile(
     time: Res<Time>,
     mut projectile_timer: ResMut<ProjectileTimer>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    // mut meshes: ResMut<Assets<Mesh>>,
+    // mut materials: ResMut<Assets<ColorMaterial>>,
+    asset_server: Res<AssetServer>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<&Transform, With<Player>>,
 ) {
@@ -107,11 +112,15 @@ fn shoot_projectile(
             projectile_timer.0.reset();
 
             commands.spawn((
-                MaterialMesh2dBundle {
-                    mesh: meshes.add(Circle::default()).into(),
-                    material: materials.add(ColorMaterial::from(PROJECTILE_COLOR)),
-                    transform: Transform::from_translation(player_transform.translation)
-                        .with_scale(PROJECTILE_SIZE),
+                SpriteBundle {
+                    texture: asset_server.load("player_projectile.png"),
+                    transform: Transform {
+                        translation: player_transform.translation,
+                        ..default()
+                    },
+                    sprite: Sprite {
+                        ..default()
+                    },
                     ..default()
                 },
                 Projectile,
@@ -141,6 +150,7 @@ fn destroy_projectiles(
 
 fn check_for_collisions(
     mut commands: Commands,
+    mut gizmos: Gizmos,
     projectiles_query: Query<(Entity, &Transform), With<Projectile>>,
     collider_query: Query<(Entity, &Transform, Option<&Enemy>), With<Collider>>,
 ) {
@@ -148,12 +158,17 @@ fn check_for_collisions(
         for (collider_entity, collider_transform, enemy_check) in &collider_query {
             let projectile_box = Aabb2d::new(
                 projectile_transform.translation.truncate(),
-                projectile_transform.scale.truncate() / 2.0
+                projectile_transform.scale.truncate() / 2.0,
             );
+
+            gizmos.rect_2d(projectile_box.center(), 0.0, projectile_box.half_size()*2.0, Color::RED);
+
             let collider_box = Aabb2d::new(
                 collider_transform.translation.truncate(),
                 collider_transform.scale.truncate() / 2.0,
             );
+            gizmos.rect_2d(collider_box.center(), 0.0, collider_box.half_size()*2.0, Color::PURPLE);
+
             let collision = projectile_box.intersects(&collider_box);
             if collision {
                 if enemy_check.is_some() {

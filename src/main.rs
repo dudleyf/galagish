@@ -1,5 +1,8 @@
 use bevy::math::bounding::{Aabb2d, BoundingVolume, IntersectsVolume};
 use bevy::prelude::*;
+use bevy::prelude::shape::Quad;
+use bevy::render::render_resource::{AsBindGroup, ShaderRef};
+use bevy::sprite::{Material2d, Material2dPlugin, MaterialMesh2dBundle};
 
 
 #[derive(Component)]
@@ -20,28 +23,71 @@ struct ProjectileTimer(Timer);
 #[derive(Component)]
 struct Enemy;
 
-const PLAYER_SCALE: Vec3 = Vec3::new(2.0, 2.0, 2.0);
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
+pub struct CustomMaterial {
+    #[uniform(0)]
+    color: Color,
+    #[uniform(0)]
+    tile: f32,
+    #[uniform(0)]
+    time: f32,
+    #[texture(1)]
+    #[sampler(2)]
+    color_texture: Option<Handle<Image>>,
+}
+
+impl Material2d for CustomMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/custom_material.wgsl".into()
+    }
+}
+
+#[derive(Default, Event)]
+struct ProjectileEvent;
+
+const PLAYER_SCALE: Vec3 = Vec3::new(1.5, 1.5, 1.5);
 const PLAYER_COLOR: Color = Color::rgb(0.3, 0.3, 0.7);
 const PLAYER_STARTING_POSITION: Vec3 = Vec3::new(0.0, -300.0, 1.0);
-const PLAYER_SPEED: f32 = 100.0;
+const PLAYER_SPEED: f32 = 200.0;
 const ENEMY_STARTING_POSITION: Vec3 = Vec3::new(0.0, 20.0, 1.0);
-const ENEMY_SCALE: Vec3 = Vec3::new(2.0, 2.0, 2.0);
-//const PROJECTILE_SIZE: Vec3 = Vec3::splat(3.0);
-//const PROJECTILE_COLOR: Color = Color::rgb(0.95, 0.95, 0.95);
+const ENEMY_SCALE: Vec3 = Vec3::new(1.5, 1.5, 1.5);
 const INITIAL_PROJECTILE_DIRECTION: Vec2 = Vec2::new(0.5, 0.5);
 const PROJECTILE_SPEED: f32 = 400.0;
 const PROJECTILE_COOLDOWN_SECONDS: f32 = 0.3;
 const TOP_OF_SCREEN: f32 = 350.0;
 const TIME_STEP: f32 = 1.0 / 60.0;
+const SCREEN_WIDTH_DEFAULT: f32 = 1300.0;
+const SCREEN_EDGE_VERTICAL: f32 = 350.0;
 
 fn setup_game(
     mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<CustomMaterial>>,
     mut gizmo_config_store: ResMut<GizmoConfigStore>,
     asset_server: Res<AssetServer>,
 ) {
     //gizmo_config_store.config_mut::<AabbGizmoConfigGroup>().1.draw_all ^= true;
 
     commands.spawn(Camera2dBundle::default());
+
+    // Spawn the background
+    commands.spawn(MaterialMesh2dBundle {
+        mesh: meshes.add(Mesh::from(Rectangle::default())).into(),
+        transform: Transform::default().with_scale(Vec3::new(
+            SCREEN_WIDTH_DEFAULT,
+            SCREEN_EDGE_VERTICAL * 2.0,
+            0.0,
+        )),
+        material: materials.add(CustomMaterial {
+            color: Color::BLUE,
+            color_texture: Some(asset_server.load("space.png")),
+            tile: 1.0,
+            time: 0.0,
+        }),
+        ..default()
+    });
+
+    // Spawn the player
     commands.spawn((
         SpriteBundle {
             texture: asset_server.load("player_ship.png"),
@@ -59,6 +105,7 @@ fn setup_game(
         Collider,
     ));
 
+    // Spawn the enemy
     commands.spawn((
         SpriteBundle {
             texture: asset_server.load("enemy_ship.png"),
@@ -80,7 +127,7 @@ fn setup_game(
 
 
 fn move_player(keyboard_input: Res<ButtonInput<KeyCode>>, mut query: Query<&mut Transform, With<Player>>) {
-    let mut paddle_transform = query.single_mut();
+    let mut player_transform = query.single_mut();
     let mut direction = 0.0;
 
     if keyboard_input.pressed(KeyCode::ArrowLeft) {
@@ -92,8 +139,8 @@ fn move_player(keyboard_input: Res<ButtonInput<KeyCode>>, mut query: Query<&mut 
         direction += 1.0;
     }
 
-    let new_paddle_position = paddle_transform.translation.x + direction * PLAYER_SPEED * TIME_STEP;
-    paddle_transform.translation.x = new_paddle_position;
+    let new_player_position = player_transform.translation.x + direction * PLAYER_SPEED * TIME_STEP;
+    player_transform.translation.x = new_player_position;
 }
 
 fn shoot_projectile(
@@ -104,13 +151,14 @@ fn shoot_projectile(
     // mut materials: ResMut<Assets<ColorMaterial>>,
     asset_server: Res<AssetServer>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut projectile_events: EventWriter<ProjectileEvent>,
     mut query: Query<&Transform, With<Player>>,
 ) {
     let player_transform = query.single_mut();
     if keyboard_input.pressed(KeyCode::Space) {
         if projectile_timer.0.tick(time.delta()).finished() {
             projectile_timer.0.reset();
-
+            projectile_events.send_default();
             commands.spawn((
                 SpriteBundle {
                     texture: asset_server.load("player_projectile.png"),
@@ -147,27 +195,29 @@ fn destroy_projectiles(
         }
     }
 }
-
 fn check_for_collisions(
     mut commands: Commands,
     mut gizmos: Gizmos,
+    assets: Res<Assets<Image>>,
     projectiles_query: Query<(Entity, &Transform), With<Projectile>>,
-    collider_query: Query<(Entity, &Transform, Option<&Enemy>), With<Collider>>,
+    collider_query: Query<(Entity, &Transform, &Handle<Image>, Option<&Enemy>), With<Collider>>,
 ) {
     for (projectile_entity, projectile_transform) in &projectiles_query {
-        for (collider_entity, collider_transform, enemy_check) in &collider_query {
-            let projectile_box = Aabb2d::new(
-                projectile_transform.translation.truncate(),
-                projectile_transform.scale.truncate() / 2.0,
-            );
+        let projectile_box = Aabb2d::new(
+            projectile_transform.translation.truncate(),
+            projectile_transform.scale.truncate() / 2.0,
+        );
+        //gizmos.rect_2d(projectile_box.center(), 0.0, projectile_box.half_size()*2.0, Color::RED);
 
-            gizmos.rect_2d(projectile_box.center(), 0.0, projectile_box.half_size()*2.0, Color::RED);
-
+        for (collider_entity, collider_transform, collider_image, enemy_check) in &collider_query {
+            //https://www.reddit.com/r/rust_gamedev/comments/14fkzwk/comment/jpfvdpq/?utm_source=share&utm_medium=web2x&context=3
+            let image_dim = assets.get(collider_image).unwrap().size().as_vec2();
+            //let scaled_image_dim = image_dim * collider_transform.scale.truncate();
             let collider_box = Aabb2d::new(
                 collider_transform.translation.truncate(),
-                collider_transform.scale.truncate() / 2.0,
+                image_dim,
             );
-            gizmos.rect_2d(collider_box.center(), 0.0, collider_box.half_size()*2.0, Color::PURPLE);
+            //gizmos.rect_2d(collider_box.center(), 0.0, collider_box.half_size()*2.0, Color::PURPLE);
 
             let collision = projectile_box.intersects(&collider_box);
             if collision {
@@ -183,11 +233,20 @@ fn check_for_collisions(
     }
 }
 
+fn update_material_time(time: Res<Time>, mut materials: ResMut<Assets<CustomMaterial>>) {
+    materials.iter_mut().for_each(|material| {
+        material.1.time = time.elapsed_seconds();
+    })
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(Material2dPlugin::<CustomMaterial>::default())
         .insert_resource(ProjectileTimer(Timer::from_seconds(PROJECTILE_COOLDOWN_SECONDS, TimerMode::Once)))
+        .insert_resource(Time::<Fixed>::from_seconds(TIME_STEP as f64))
         .add_systems(Startup, setup_game)
+        .add_systems(Update, update_material_time)
         .add_systems(Update, check_for_collisions)
         .add_systems(FixedUpdate, (
             move_player,
@@ -195,7 +254,7 @@ fn main() {
             move_projectiles,
             destroy_projectiles
         ).before(check_for_collisions))
-        .insert_resource(Time::<Fixed>::from_seconds(TIME_STEP as f64))
         .add_systems(Update, bevy::window::close_on_esc)
+        .add_event::<ProjectileEvent>()
         .run();
 }
